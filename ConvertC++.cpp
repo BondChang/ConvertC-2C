@@ -8,7 +8,7 @@ typedef list<char*> LISTVARS;
 LISTVARS listVars;
 extern "C" __declspec(dllexport) std::string parserExpr(Stmt * stmt, ASTContext * Context);
 extern "C" __declspec(dllexport) void dealInitValue(const Expr * initExpr, std::string * initValueStr);
-extern "C" __declspec(dllexport) std::string dealType(const Type * type, std::string typeStr, QualType nodeType);
+extern "C" __declspec(dllexport) std::string dealType(const Type * type, std::string typeStr, QualType nodeType,std::string *dimStr);
 int funArrayLen = 0;
 bool isParserIfStmt = false;
 std::vector<int> fileLocVector;
@@ -16,6 +16,7 @@ std::vector<InitClassFun> initClassFunVector;
 std::vector<std::string> allConstructionMethodVector;
 /* 存储所有的文件信息 */
 std::vector<std::string> fileContentVector;
+std::string cPlusPlusPath;
 static llvm::cl::OptionCategory MyToolCategory("global-detect options");
 class Find_Includes : public PPCallbacks {
 public:
@@ -28,14 +29,18 @@ public:
 		const clang::Module* imported,
 		SrcMgr::CharacteristicKind FileType) {
 		// do something with the include
-		std::cout << file_name.str();
-		std::cout << "Found at least one include" << std::endl;
+	/*	std::cout << file_name.str();
+		std::cout << "Found at least one include" << std::endl;*/
 		has_include = true;
 	}
 };
 bool isParserd(SourceLocation sourceLoc,
 	ASTContext* Context) {
 	SourceManager& sourceManager = Context->getSourceManager();
+	/*auto presumedLoc =sourceManager.getPresumedLoc(sourceLoc);
+	if (!presumedLoc.isValid()) {
+		return false;
+	}*/
 	int lineNum = sourceManager.getPresumedLoc(sourceLoc).getLine();
 	std::vector<int>::iterator ret;
 	ret = std::find(fileLocVector.begin(), fileLocVector.end(), lineNum);
@@ -50,21 +55,21 @@ bool judgeHasConstructionMethod(std::string className) {
 	if (allConstructionMethodVector.size() > 0) {
 		for (auto iter = allConstructionMethodVector.begin(); iter != allConstructionMethodVector.end(); iter++)
 		{
-			if (className+"_"+className == (*iter)) {
+			if (className + "_" + className == (*iter)) {
 				return true;
 			}
 		}
 	}
 	return false;
 }
-std::string dealRecordStmt(std::string typeStr,bool isPointerType,std::string nameStr,std::string initValueStr) {
+std::string dealRecordStmt(std::string typeStr, bool isPointerType, std::string nameStr, std::string initValueStr,std::string dimStr) {
 	bool isHasConstructionMethod = judgeHasConstructionMethod(typeStr);
-	std::string paraName="";
+	std::string paraName = "";
 	if (isPointerType) {
 		paraName = nameStr;
 	}
 	else {
-		paraName = "&"+nameStr;
+		paraName = "&" + nameStr;
 	}
 	std::string initStructStr = "";
 	if (isHasConstructionMethod) {
@@ -73,12 +78,15 @@ std::string dealRecordStmt(std::string typeStr,bool isPointerType,std::string na
 	else {
 		initStructStr += typeStr + "_" + "init" + "(" + paraName + ");";
 	}
+	if (isPointerType) {
+		typeStr += "*";
+	}
 	if (initValueStr == "") {
 
-		return typeStr + "* " + nameStr + ";" + "\n\t" + initStructStr ;
+		return typeStr + " " + nameStr+dimStr + ";" + "\n\t" + initStructStr;
 	}
 	else {
-		return typeStr + "* " + nameStr + "=" + initValueStr + ";" + "\n\t" + initStructStr ;
+		return typeStr + " " + nameStr+dimStr + "=" + initValueStr + ";" + "\n\t" + initStructStr;
 	}
 }
 std::string dealVarDeclNode(VarDecl* var) {
@@ -90,7 +98,8 @@ std::string dealVarDeclNode(VarDecl* var) {
 		type = DT->getOriginalType().getTypePtr();
 		nodeType = DT->getOriginalType();
 	}
-	typeStr = dealType(type, typeStr, nodeType);
+	std::string dimStr = "";
+	typeStr = dealType(type, typeStr, nodeType, &dimStr);
 	std::string initValueStr = "";
 	const Expr* initExpr = var->getAnyInitializer();
 	/* 处理全局变量的初值 */
@@ -99,13 +108,13 @@ std::string dealVarDeclNode(VarDecl* var) {
 	std::string nameStr = var->getNameAsString();
 	if (type->getTypeClass() == 36) {
 		typeStr = type->getAsRecordDecl()->getNameAsString();
-		return dealRecordStmt(typeStr, false,nameStr,initValueStr);
+		return dealRecordStmt(typeStr, false, nameStr, initValueStr,dimStr);
 	}
 	else if (type->getTypeClass() == 34) {
 		QualType pointType = type->getPointeeType();
 		if (pointType.getTypePtr()->isStructureOrClassType()) {
 			typeStr = pointType.getTypePtr()->getAsCXXRecordDecl()->getNameAsString();
-			return dealRecordStmt(typeStr, true, nameStr, initValueStr);
+			return dealRecordStmt(typeStr, true, nameStr, initValueStr, dimStr);
 		}
 
 	}
@@ -115,10 +124,10 @@ std::string dealVarDeclNode(VarDecl* var) {
 	}*/
 
 	if (initValueStr == "") {
-		return typeStr + " " + nameStr + ";";
+		return typeStr + " " + nameStr +dimStr + ";";
 	}
 	else {
-		return typeStr + " " + nameStr + "=" + initValueStr + ";";
+		return typeStr + " " + nameStr + dimStr + "=" + initValueStr + ";";
 	}
 
 }
@@ -202,7 +211,7 @@ std::string dealQualifiers(QualType nodeType,
 	std::string qualifier = nodeType.getQualifiers().getAsString();
 	return qualifier;
 }
-std::string dealType(const Type* type, std::string typeStr, QualType nodeType) {
+std::string dealType(const Type* type, std::string typeStr, QualType nodeType,std::string *dimStr) {
 	std::string qualifier = "";
 	/* 说明有类型修饰符 */
 	if (nodeType.hasQualifiers()) {
@@ -215,13 +224,14 @@ std::string dealType(const Type* type, std::string typeStr, QualType nodeType) {
 		QualType qualType = dealArrayType(type);
 		typeStr = qualType.getAsString();
 		/* 处理数组的维度 */
-		std::string dimStr = "[";
-		dimStr = dealDim(type, dimStr);
+		*dimStr = "[";
+		*dimStr = dealDim(type, *dimStr);
 		type = qualType.getTypePtr();
 		if (type->isPointerType()) {
-			dealType(type, typeStr, nodeType);
+			dealType(type, typeStr, nodeType, dimStr);
 		}
-		typeStr = qualifier + " " + typeStr + " " + dimStr;
+		//typeStr = qualifier + " " + typeStr + " " + dimStr;
+		typeStr = qualifier + " " + typeStr;
 	}
 	/* 如果是指针类型 */
 	else if (type->isPointerType()) {
@@ -237,15 +247,38 @@ std::string dealType(const Type* type, std::string typeStr, QualType nodeType) {
 		typeStr = pointType.getLocalUnqualifiedType().getCanonicalType().getAsString();
 		/* 类型加指针 */
 		std::string dimStr = pointer;
-		typeStr = qualifier + " " + typeStr + " " + dimStr;
+		typeStr = qualifier + " " + typeStr ;
 	}
 
 	/* 如果不是数组 */
 	else {
-		std::string dimStr = "";
-		typeStr = qualifier + " " + typeStr + " " + dimStr;
+		if (qualifier == "") {
+			typeStr = typeStr;
+		}
+		else {
+			typeStr = qualifier + " " + typeStr ;
+		}
+
 	}
 	return typeStr;
+}
+bool judgeConstStIsMethodStmt(const Stmt* st, ASTContext* astContext) {
+	auto& parents = astContext->getParents(*st);
+	if (parents.empty()) {
+		return false;
+	}
+	/* 获取父节点 */
+	const Stmt* currentSt = parents[0].get<Stmt>();
+	if (!currentSt) {
+		return false;
+	}
+	if (isa<CXXMemberCallExpr>(currentSt)) {
+		return true;
+	}
+	else {
+		return judgeConstStIsMethodStmt(currentSt, astContext);
+	}
+	return false;
 }
 bool judgeConstStIsFunStmt(const Stmt* st, ASTContext* astContext) {
 	auto& parents = astContext->getParents(*st);
@@ -343,6 +376,21 @@ bool judgeIsClassFun(FunctionDecl* func) {
 	}
 }
 
+
+std::string getInitRecodeInVector(std::string funcName) {
+	if (initClassFunVector.size() > 0) {
+		for (auto iter = initClassFunVector.begin(); iter != initClassFunVector.end(); iter++)
+		{
+			if (funcName == (*iter).name) {
+				std::string initStr = (*iter).initCompound;
+				initClassFunVector.erase(iter);
+				return initStr;
+			}
+		}
+	}
+	return "";
+}
+
 /* 处理结构体信息 */
 void dealVarRecordDeclNode(CXXRecordDecl const* varRecordDeclNode, ASTContext* Context) {
 	std::string recodeStr = "";
@@ -389,8 +437,9 @@ void dealVarRecordDeclNode(CXXRecordDecl const* varRecordDeclNode, ASTContext* C
 		/* 将全局变量的类型转成Type类型,便于后续判断是否为数组 */
 		const Type* type = jt->getType().getTypePtr();
 		QualType nodeType = jt->getType();
-		dealType(type, fieldTypeStr, nodeType);
-		recodeStr += fieldTypeStr + " " + fieldNameStr + ";\n\t";
+		std::string dimStr = "";
+		fieldTypeStr=dealType(type, fieldTypeStr, nodeType,&dimStr);
+		recodeStr += fieldTypeStr + " " + fieldNameStr + " " + dimStr + ";\n\t";
 		std::string initValueStr = "";
 		const Expr* initExpr = field->getInClassInitializer();;
 		/* 处理全局变量的初值 */
@@ -412,8 +461,14 @@ void dealVarRecordDeclNode(CXXRecordDecl const* varRecordDeclNode, ASTContext* C
 		recodeStr += "\r};";
 	}
 	fileContentVector.push_back(recodeStr);
-
+	std::string initRecodeFunStr = getInitRecodeInVector(nameStr);
+	if (!(initRecodeFunStr == "")) {
+		std::string initFunStr = "";
+		initFunStr += "void " + nameStr + "_init(" + nameStr + "* " + "p" + nameStr + ")\n{\t" + initRecodeFunStr + "\r}";
+		fileContentVector.push_back(initFunStr);
+	}
 }
+
 
 std::string getInitStrInVector(std::string funcName) {
 	if (initClassFunVector.size() > 0) {
@@ -428,6 +483,18 @@ std::string getInitStrInVector(std::string funcName) {
 	}
 	return "";
 }
+bool judgeIsParserFile(SourceLocation sourceLoc, ASTContext* Context) {
+	SourceManager& sourceManager = Context->getSourceManager();
+	std::string path = sourceManager.getFilename(sourceLoc).str().c_str();
+	std::replace(path.begin(), path.end(), '\\', '/');
+	std::replace(cPlusPlusPath.begin(), cPlusPlusPath.end(), '\\', '/');
+	if (path == cPlusPlusPath) {
+		return true;
+	}
+	else {
+		return false;
+	}
+}
 class FindNamedClassVisitor
 	: public RecursiveASTVisitor<FindNamedClassVisitor> {
 public:
@@ -438,17 +505,21 @@ private:
 
 public:
 	virtual bool VisitVarDecl(VarDecl* var) {
-		auto isInFunction = var->getParentFunctionOrMethod();
-		if (!isInFunction) {
-			if (!isParserd(var->getBeginLoc(), Context)) {
-				addNodeInfo(var->getBeginLoc(), Context);
-				fileContentVector.push_back(dealVarDeclNode(var));
+		bool isParserFile = judgeIsParserFile(var->getBeginLoc(), Context);
+		if (isParserFile) {
+			auto isInFunction = var->getParentFunctionOrMethod();
+			if (!isInFunction) {
+				if (!isParserd(var->getBeginLoc(), Context)) {
+					addNodeInfo(var->getBeginLoc(), Context);
+					fileContentVector.push_back(dealVarDeclNode(var));
+				}
 			}
 		}
 		return true;
 	}
 	virtual bool VisitFunctionDecl(FunctionDecl* func) {
-		if (func->isCanonicalDecl()) {
+		bool isParserFile = judgeIsParserFile(func->getBeginLoc(), Context);
+		if (isParserFile) {
 			bool isClassFun = judgeIsClassFun(func);
 			std::string funStr = "";
 			std::string funcName = func->getNameInfo().getName().getAsString();
@@ -483,12 +554,13 @@ public:
 						type = DT->getOriginalType().getTypePtr();
 						nodeType = DT->getOriginalType();
 					}
-					typeStr = dealType(type, typeStr, nodeType);
+					std::string dimStr = "";
+					typeStr = dealType(type, typeStr, nodeType,&dimStr);
 					if (i == paraNum - 1) {
-						funStr += typeStr + " " + nameStr;
+						funStr += typeStr + " " + nameStr+dimStr;
 					}
 					else {
-						funStr += typeStr + " " + nameStr + ",";
+						funStr += typeStr + " " + nameStr +dimStr + ",";
 					}
 
 				}
@@ -509,28 +581,33 @@ public:
 			else {
 				funStr += "\r};";
 			}
-
 			fileContentVector.push_back(funStr);
 		}
 		return true;
 	}
 
 	virtual bool VisitStmt(Stmt* st) {
-		bool isFunctionStmt = judgeStIsFunStmt(st, Context);
-		SourceManager& sourceManager = Context->getSourceManager();
-		/* 如果不是函数中的stmt，在进行解析 */
-		if (!isFunctionStmt) {
-			if (!isParserd(st->getBeginLoc(), Context)) {
-				std::string stmtStr = parserExpr(st, Context);
-				fileContentVector.push_back(stmtStr);
+		bool isParserFile = judgeIsParserFile(st->getBeginLoc(), Context);
+		if (isParserFile && (!dyn_cast<IntegerLiteral>(st)) && (!dyn_cast<FloatingLiteral>(st))) {
+			bool isFunctionStmt = judgeStIsFunStmt(st, Context);
+			SourceManager& sourceManager = Context->getSourceManager();
+			/* 如果不是函数中的stmt，在进行解析 */
+			if (!isFunctionStmt) {
+				if (!isParserd(st->getBeginLoc(), Context)) {
+					std::string stmtStr = parserExpr(st, Context);
+					fileContentVector.push_back(stmtStr);
+				}
 			}
 		}
 		return true;
 	}
 
 	virtual bool VisitCXXRecordDecl(CXXRecordDecl* recodeDecl) {
-		judgeIsHaveInitFun(recodeDecl);
-		dealVarRecordDeclNode(recodeDecl, Context);
+		bool isParserFile = judgeIsParserFile(recodeDecl->getBeginLoc(), Context);
+		if (isParserFile) {
+			judgeIsHaveInitFun(recodeDecl);
+			dealVarRecordDeclNode(recodeDecl, Context);
+		}
 		return true;
 	}
 
@@ -636,7 +713,6 @@ void dealSubIfStmt(Stmt* subOtherStmt, std::string& otherStmt, ASTContext* Conte
 	}
 }
 std::string parserExpr(Stmt* stmt, ASTContext* Context) {
-
 	addNodeInfo(stmt->getBeginLoc(), Context);
 	switch (stmt->getStmtClass()) {
 	case Expr::ImplicitCastExprClass:
@@ -713,11 +789,25 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 			return parserExpr(leftBinaryOperator, Context) + "=" +
 				parserExpr(rightBinaryOperator, Context);
 		}
-		default: {
-			break;
+		case BO_Shl: {
+			return parserExpr(leftBinaryOperator, Context) + "<<" +
+				parserExpr(rightBinaryOperator, Context);
 		}
 
+				   case BO_EQ
+				   : {
+					   return parserExpr(leftBinaryOperator, Context) + "==" +
+						   parserExpr(rightBinaryOperator, Context);
+				   }
+				   default: {
+					   return "123";
+					   break;
+				   }
+
 		}
+	}
+	case Expr::ArraySubscriptExprClass: {
+		return "123";
 	}
 	case Expr::MemberExprClass: {
 		MemberExpr* memberExpr = dyn_cast<MemberExpr>(stmt);
@@ -727,7 +817,7 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 		auto fildName = memberExpr->getMemberDecl()->getDeclName().getAsString();
 		auto stmtClassType = cxxThisExprNode->getStmtClass();
 		if (stmtClassType == Expr::CXXThisExprClass) {
-			return "p" + className + "." + fildName;
+			return "p" + className + "->" + fildName;
 		}
 		else {
 			return  className + fildName;
@@ -746,9 +836,10 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 
 	}case Expr::FloatingLiteralClass: {
 		FloatingLiteral* floatingLiteral = dyn_cast<FloatingLiteral>(stmt);
-		llvm::SmallVector<char, 32> floatValue;
-		floatingLiteral->getValue().toString(floatValue, 32, 0);
-		return floatValue.data();
+		auto doubleValue = floatingLiteral->getValue().convertToDouble();
+		/*llvm::SmallVector<char, 32> floatValue;
+		floatingLiteral->getValue().toString(floatValue, 32, 0);*/
+		return to_string(doubleValue);
 	}
 	case Expr::IfStmtClass: {
 		IfStmt* rootIfStmt = dyn_cast<IfStmt>(stmt);
@@ -775,21 +866,33 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 				return "if(" + rootIfCondStr + "){" + "\n" + rootIfCompStr + "}" + "\n" + "else\n{" + elseCondStr + "}" + "\n";
 			}
 		}
+		else {
+			return "if(" + rootIfCondStr + "){" + "\n" + rootIfCompStr + "}" + "\n";
+		}
+
 	}
 	case Expr::CompoundStmtClass: {
-		std::string compStmtBodyStr;
+		std::string compStmtBodyStr = "";
 		CompoundStmt* compStmt = dyn_cast<CompoundStmt>(stmt);
-		for (auto compStmtChild = compStmt->child_begin();
-			compStmtChild != compStmt->child_end(); compStmtChild++) {
-			Stmt* exprStmt = *compStmtChild;
-			std::string singleCompStmtBodyStr = parserExpr(exprStmt, Context);
-			if (singleCompStmtBodyStr.find(";") != std::string::npos) {
-				compStmtBodyStr += singleCompStmtBodyStr + "\n\t";
-			}
-			else {
-				compStmtBodyStr += singleCompStmtBodyStr + ";\n\t";
-			}
+		if (compStmt) {
+			for (auto compStmtChild = compStmt->child_begin();
+				compStmtChild != compStmt->child_end(); compStmtChild++) {
+				Stmt* exprStmt = *compStmtChild;
+				if (dyn_cast<CompoundAssignOperator>(exprStmt) || dyn_cast<CXXOperatorCallExpr>(exprStmt)) {
+					continue;
+				}
+				std::string singleCompStmtBodyStr = parserExpr(exprStmt, Context);
+				if (!singleCompStmtBodyStr.empty()) {
+					if (singleCompStmtBodyStr.find(";") != std::string::npos) {
+						compStmtBodyStr += singleCompStmtBodyStr + "\n\t";
+					}
 
+					else {
+						compStmtBodyStr += singleCompStmtBodyStr + ";\n\t";
+					}
+
+				}
+			}
 		}
 		return compStmtBodyStr;
 
@@ -816,6 +919,9 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 		case UO_PostDec: {
 			return parserExpr(unaryOperatorExpr->getSubExpr(), Context) + "--";
 		}
+		default: {
+			return "123";
+		}
 		}
 		break;
 	}
@@ -826,12 +932,18 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 		addNodeInfo(valueDecl->getBeginLoc(), Context);
 		auto type = valueDecl->getType();
 		if (type->getTypeClass() == 36) {
-			return type->getAsRecordDecl()->getNameAsString() + ".";
+			bool isMemberCallExpr = judgeConstStIsMethodStmt(declRefExpr, Context);
+			if (isMemberCallExpr) {
+				return type->getAsRecordDecl()->getNameAsString() + "_";
+			}
+			//return type->getAsRecordDecl()->getNameAsString() + ".";
+			return valueDecl->getNameAsString() + ".";
 		}
 		else if (type->getTypeClass() == 34) {
 			QualType pointType = type->getPointeeType();
 			if (pointType.getTypePtr()->isStructureOrClassType()) {
-				return pointType.getTypePtr()->getAsCXXRecordDecl()->getNameAsString() + "->";
+				//return pointType.getTypePtr()->getAsCXXRecordDecl()->getNameAsString() + "->";
+				return valueDecl->getNameAsString() + "->";
 			}
 
 		}
@@ -849,7 +961,13 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 	case Expr::ReturnStmtClass: {
 		ReturnStmt* returnStmt = dyn_cast<ReturnStmt>(stmt);
 		Expr* expr = returnStmt->getRetValue();
-		return "return " + parserExpr(expr, Context) + ";";
+		if (expr) {
+			return "return " + parserExpr(expr, Context) + ";";
+		}
+		else {
+			return "return 333;";
+		}
+		
 	}
 							  /*case Expr::CXXMemberCallExprClass: {
 								  CXXMemberCallExpr* cXXMemberCallExpr = dyn_cast<CXXMemberCallExpr>(stmt);
@@ -862,6 +980,30 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 		auto func_decl = call->getCallee();
 		auto funcCall = parserExpr(func_decl, Context);
 		std::string callArgsStr = "";
+		if (dyn_cast<MemberExpr>(func_decl)) {
+			auto memberExpr = dyn_cast<MemberExpr>(func_decl);
+			auto memberBase = memberExpr->getBase();
+			if (dyn_cast<DeclRefExpr>(memberBase)) {
+				auto declRefExpr = dyn_cast<DeclRefExpr>(memberBase);
+
+				ValueDecl* valueDecl = declRefExpr->getDecl();
+				auto type = valueDecl->getType();
+				if (type->getTypeClass() == 36) {
+					callArgsStr += "&" + valueDecl->getNameAsString();
+				}
+				else if (type->getTypeClass() == 34) {
+					QualType pointType = type->getPointeeType();
+					if (pointType.getTypePtr()->isStructureOrClassType()) {
+
+						callArgsStr += valueDecl->getNameAsString();
+					}
+
+				}
+			}
+		}
+		if (call->getNumArgs() > 0) {
+			callArgsStr += ",";
+		}
 		for (int i = 0, j = call->getNumArgs(); i < j; i++) {
 			Expr* callArg = call->getArg(i);
 			if (i == call->getNumArgs() - 1) {
@@ -876,12 +1018,14 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 	}
 	case Expr::DeclStmtClass: {
 		DeclStmt* declStmt = dyn_cast<DeclStmt>(stmt);
-		auto declExprNode = declStmt->getSingleDecl();
-		addNodeInfo(declExprNode->getBeginLoc(), Context);
-		if (VarDecl* varDeclNode = dyn_cast<VarDecl>(declExprNode)) {
-			return dealVarDeclNode(varDeclNode);
-		}
+		if (declStmt->isSingleDecl()) {
+			auto declExprNode = declStmt->getSingleDecl();
+			addNodeInfo(declExprNode->getBeginLoc(), Context);
+			if (VarDecl* varDeclNode = dyn_cast<VarDecl>(declExprNode)) {
+				return dealVarDeclNode(varDeclNode);
+			}
 
+		}
 		//for (auto declChild = declStmt->child_begin(); declChild != declStmt->child_end(); declChild++) {
 		//	Stmt* singleDeclStmt = *declChild;
 		//	std::cout << "\n";
@@ -890,11 +1034,17 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 		//	}*/
 		//	return "123";
 		//}
-		break;
+		else{
+		return "123";
+
 	}
+	}
+	default: {
+		return "123";
 
 	}
 
+	}
 }
 class FindNamedClassConsumer : public clang::ASTConsumer {
 public:
@@ -915,20 +1065,92 @@ public:
 		Preprocessor& pp = Compiler.getPreprocessor();
 		Find_Includes* find_includes_callback =
 			static_cast<Find_Includes*>(pp.getPPCallbacks());
-
+		/*auto& langOpts = Compiler.getLangOpts();
+		langOpts.CPlusPlus = true;*/
+		/*langOpts.CPlusPlus11 = true;
+		langOpts.CPlusPlus14 = true;
+		langOpts.C11 = true;
+		langOpts.C99 = true;
+		langOpts.C17 = true;
+		langOpts.Bool = true;*/
+		//CompilerInvocation& invocation = Compiler.getInvocation();
+		//InputKind(Language::CXX).getPreprocessed();
+		////auto *TO = new TargetOptions();
+		////llvm::IntrusiveRefCntPtr<TargetOptions> pto(new TargetOptions());
+		//auto TO = std::make_shared<TargetOptions>();
+		//TO->Triple = llvm::sys::getDefaultTargetTriple();
+		////TO->Triple = llvm::sys::getDefaultTargetTriple();
+		//TargetInfo* targetInfo =
+		//	TargetInfo::CreateTargetInfo(Compiler.getDiagnostics(), TO);
+		//Compiler.setTarget(targetInfo);
+		//invocation.setLangDefaults(langOpts, InputKind(Language::CXX).getPreprocessed(), targetInfo->getTriple(), Compiler.getPreprocessorOpts(), LangStandard::lang_cxx14);
+		/*Compiler.createDiagnostics();
+		Compiler.createFileManager();
+		Compiler.createSourceManager(Compiler.getFileManager());
+		Compiler.createPreprocessor(TU_Module);*/
+		//Compiler.createASTContext();
 		// do whatever you want with the callback now
-		if (find_includes_callback->has_include) {
+		/*if (find_includes_callback->has_include) {
 			std::cout << "Found at least one include" << std::endl;
-		}
+		}*/
 		return std::unique_ptr<clang::ASTConsumer>(
 			new FindNamedClassConsumer(&Compiler.getASTContext()));
 	}
 	bool BeginSourceFileAction(CompilerInstance& ci) {
 		std::unique_ptr<Find_Includes> find_includes_callback(new Find_Includes());
+		//auto& langOpts = ci.getLangOpts();
+		//langOpts.is
+		//langOpts.CPlusPlus = true;
+		//langOpts.CPlusPlus11 = true;
+		//langOpts.CPlusPlus14 = true;
+		//langOpts.C11 = true;
+		//langOpts.C99 = true;
+		//langOpts.C17 = true;
+		//langOpts.Bool = true;
+
+
+		/*CompilerInvocation& invocation = ci.getInvocation();
+		auto TO = std::make_shared<TargetOptions>();
+		TO->Triple = llvm::sys::getDefaultTargetTriple();
+		TargetInfo* targetInfo =
+			TargetInfo::CreateTargetInfo(ci.getDiagnostics(), TO);
+		ci.setTarget(targetInfo);
+		invocation.setLangDefaults(langOpts, InputKind(Language::CXX).getPreprocessed(), targetInfo->getTriple(), ci.getPreprocessorOpts(), LangStandard::lang_cxx14);
+		ci.createDiagnostics();
+		ci.createFileManager();
+		ci.createSourceManager(ci.getFileManager());
+		ci.createPreprocessor(TU_Module);
+		ci.createASTContext();*/
+
+
+		//CompilerInvocation& invocation = ci.getInvocation();
+		//auto TO = std::make_shared<TargetOptions>();
+		//TO->Triple = llvm::sys::getDefaultTargetTriple();
+		//TargetInfo* targetInfo =
+		//	TargetInfo::CreateTargetInfo(ci.getDiagnostics(), TO);
+		//ci.setTarget(targetInfo);
+
+		//ci.createFileManager();
+		//auto& fileManager = ci.getFileManager();
+
+		//ci.createSourceManager(fileManager);
+		//auto& sourceManager = ci.getSourceManager();
+
+		//LangOptions langOpts;
+		//langOpts.GNUMode = 1;
+		//langOpts.CXXExceptions = 1;
+		//langOpts.RTTI = 1;
+		//langOpts.Bool = 1;   // <-- Note the Bool option here !
+		//langOpts.CPlusPlus = 1;
+		//PreprocessorOptions& PPOpts = ci.getPreprocessorOpts();
+		//invocation.setLangDefaults(langOpts,
+		//	clang::IK_CXX,
+		//	TO->Triple,
+		//	PPOpts,
+		//	clang::LangStandard::lang_cxx0x);
 
 		Preprocessor& pp = ci.getPreprocessor();
 		pp.addPPCallbacks(std::move(find_includes_callback));
-
 		return true;
 	}
 	void EndSourceFileAction() {
@@ -943,26 +1165,19 @@ public:
 		}
 	}
 };
-int main(int argc, const char** argv) {
+void convertCPlusPlus2C(std::string sourcePath, std::string writePath) {
+	cPlusPlusPath = sourcePath;
 	int a = 3;
-	const char* argvs1212[3] = { "", "", "" };
+	const char* argvs1212[3] = { "", "", "--"};
 	CommonOptionsParser OptionsParser(a, argvs1212, MyToolCategory);
 	// run the Clang Tool, creating a new FrontendAction (explained below)
 	std::vector<std::string> fileList;
-	fileList.push_back("C:\\Users\\bondc\\Desktop\\m.cpp");
+	fileList.push_back(sourcePath);
 	ClangTool Tool(OptionsParser.getCompilations(), fileList);
-	int result = Tool.run(newFrontendActionFactory<FindNamedClassAction>().get());
-	if (initClassFunVector.size() > 0) {
-		for (auto iter = initClassFunVector.begin(); iter != initClassFunVector.end(); iter++)
-		{
-			std::string initFunStr = "";
-			initFunStr += "void " + (*iter).name + "_init(" + (*iter).name + "* " + "p" + (*iter).name + ")\n{\t" + (*iter).initCompound + "\r}";
-			fileContentVector.push_back(initFunStr);
-		}
-	}
 
+	Tool.run(newFrontendActionFactory<FindNamedClassAction>().get());
 	std::ofstream fout;
-	fout.open("C:\\Users\\bondc\\Desktop\\a.c");
+	fout.open(writePath);
 	if (fileContentVector.size() > 0) {
 		for (auto iter = fileContentVector.begin(); iter != fileContentVector.end(); iter++)
 		{
@@ -970,5 +1185,18 @@ int main(int argc, const char** argv) {
 		}
 	}
 	fout.close();
-	return result;
+}
+int main(int argc, const char** argv) {
+
+	/*if (initClassFunVector.size() > 0) {
+		for (auto iter = initClassFunVector.begin(); iter != initClassFunVector.end(); iter++)
+		{
+			std::string initFunStr = "";
+			initFunStr += "void " + (*iter).name + "_init(" + (*iter).name + "* " + "p" + (*iter).name + ")\n{\t" + (*iter).initCompound + "\r}";
+			fileContentVector.push_back(initFunStr);
+		}
+	}*/
+
+	convertCPlusPlus2C("C:\\Users\\bondc\\Desktop\\CtrlEx\\CtrlEx\\CtrlEx_inner_algo.cpp", "C:\\Users\\bondc\\Desktop\\a.c");
+	return 0;
 }
