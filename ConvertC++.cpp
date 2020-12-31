@@ -1,5 +1,4 @@
 ﻿#include "ConvertC++.h"
-
 using namespace std;
 using namespace clang;
 using namespace clang::tooling;
@@ -8,10 +7,12 @@ typedef list<char*> LISTVARS;
 LISTVARS listVars;
 extern "C" __declspec(dllexport) std::string parserExpr(Stmt * stmt, ASTContext * Context);
 extern "C" __declspec(dllexport) void dealInitValue(const Expr * initExpr, std::string * initValueStr);
-extern "C" __declspec(dllexport) std::string dealType(const Type * type, std::string typeStr, QualType nodeType,std::string *dimStr);
+extern "C" __declspec(dllexport) std::string dealType(const Type * type, std::string typeStr, QualType nodeType, std::string * dimStr);
+extern "C" __declspec(dllexport) bool judgeIsParserFile(SourceLocation sourceLoc, ASTContext* Context);
 int funArrayLen = 0;
 bool isParserIfStmt = false;
 std::vector<int> fileLocVector;
+ASTContext* globalContext;
 std::vector<InitClassFun> initClassFunVector;
 std::vector<std::string> allConstructionMethodVector;
 /* 存储所有的文件信息 */
@@ -21,6 +22,7 @@ static llvm::cl::OptionCategory MyToolCategory("global-detect options");
 class Find_Includes : public PPCallbacks {
 public:
 	bool has_include;
+	
 
 	void InclusionDirective(SourceLocation hash_loc, const Token& include_token,
 		StringRef file_name, bool is_angled,
@@ -28,9 +30,14 @@ public:
 		StringRef search_path, StringRef relative_path,
 		const clang::Module* imported,
 		SrcMgr::CharacteristicKind FileType) {
-		// do something with the include
-	/*	std::cout << file_name.str();
-		std::cout << "Found at least one include" << std::endl;*/
+		//auto& sourceManager = globalContext->getSourceManager();
+		//std::string parserPath = sourceManager.getFilename(hash_loc).str();
+		std::string fileName = relative_path;
+		bool isParserFile=judgeIsParserFile(hash_loc, globalContext);
+		if (isParserFile) {
+			fileContentVector.push_back("#include \"" + fileName + "\"");
+		}
+		
 		has_include = true;
 	}
 };
@@ -62,7 +69,7 @@ bool judgeHasConstructionMethod(std::string className) {
 	}
 	return false;
 }
-std::string dealRecordStmt(std::string typeStr, bool isPointerType, std::string nameStr, std::string initValueStr,std::string dimStr) {
+std::string dealRecordStmt(std::string typeStr, bool isPointerType, std::string nameStr, std::string initValueStr, std::string dimStr) {
 	bool isHasConstructionMethod = judgeHasConstructionMethod(typeStr);
 	std::string paraName = "";
 	if (isPointerType) {
@@ -83,10 +90,10 @@ std::string dealRecordStmt(std::string typeStr, bool isPointerType, std::string 
 	}
 	if (initValueStr == "") {
 
-		return typeStr + " " + nameStr+dimStr + ";" + "\n\t" + initStructStr;
+		return typeStr + " " + nameStr + dimStr + ";" + "\n\t" + initStructStr;
 	}
 	else {
-		return typeStr + " " + nameStr+dimStr + "=" + initValueStr + ";" + "\n\t" + initStructStr;
+		return typeStr + " " + nameStr + dimStr + "=" + initValueStr + ";" + "\n\t" + initStructStr;
 	}
 }
 std::string dealVarDeclNode(VarDecl* var) {
@@ -108,7 +115,7 @@ std::string dealVarDeclNode(VarDecl* var) {
 	std::string nameStr = var->getNameAsString();
 	if (type->getTypeClass() == 36) {
 		typeStr = type->getAsRecordDecl()->getNameAsString();
-		return dealRecordStmt(typeStr, false, nameStr, initValueStr,dimStr);
+		return dealRecordStmt(typeStr, false, nameStr, initValueStr, dimStr);
 	}
 	else if (type->getTypeClass() == 34) {
 		QualType pointType = type->getPointeeType();
@@ -124,7 +131,7 @@ std::string dealVarDeclNode(VarDecl* var) {
 	}*/
 
 	if (initValueStr == "") {
-		return typeStr + " " + nameStr +dimStr + ";";
+		return typeStr + " " + nameStr + dimStr + ";";
 	}
 	else {
 		return typeStr + " " + nameStr + dimStr + "=" + initValueStr + ";";
@@ -134,9 +141,13 @@ std::string dealVarDeclNode(VarDecl* var) {
 void addNodeInfo(SourceLocation sourceLoc,
 	ASTContext* Context) {
 	SourceManager& sourceManager = Context->getSourceManager();
-	int lineNum = sourceManager.getPresumedLoc(sourceLoc).getLine();
-	//std::string fileLoc = sourceManager.getFileLoc(sourceLoc).str();
-	fileLocVector.push_back(lineNum);
+	auto a = sourceManager.getPresumedLoc(sourceLoc);
+	if (a.isValid()) {
+		int lineNum = a.getLine();
+		//std::string fileLoc = sourceManager.getFileLoc(sourceLoc).str();
+		fileLocVector.push_back(lineNum);
+	}
+
 }
 std::string dealDim(const Type* type, std::string dimStr) {
 
@@ -211,7 +222,7 @@ std::string dealQualifiers(QualType nodeType,
 	std::string qualifier = nodeType.getQualifiers().getAsString();
 	return qualifier;
 }
-std::string dealType(const Type* type, std::string typeStr, QualType nodeType,std::string *dimStr) {
+std::string dealType(const Type* type, std::string typeStr, QualType nodeType, std::string* dimStr) {
 	std::string qualifier = "";
 	/* 说明有类型修饰符 */
 	if (nodeType.hasQualifiers()) {
@@ -247,18 +258,21 @@ std::string dealType(const Type* type, std::string typeStr, QualType nodeType,st
 		typeStr = pointType.getLocalUnqualifiedType().getCanonicalType().getAsString();
 		/* 类型加指针 */
 		std::string dimStr = pointer;
-		typeStr = qualifier + " " + typeStr ;
+		typeStr = qualifier + " " + typeStr + pointer;
 	}
 
 	/* 如果不是数组 */
 	else {
-		if (qualifier == "") {
-			typeStr = typeStr;
+		if (qualifier != "") {
+			typeStr = qualifier + " " + typeStr;
 		}
-		else {
-			typeStr = qualifier + " " + typeStr ;
-		}
-
+	}
+	auto idx = typeStr.find("struct");
+	if (idx != string::npos) {
+		typeStr.erase(idx, 6);
+	}
+	if (typeStr == "_Bool") {
+		return "bool";
 	}
 	return typeStr;
 }
@@ -277,6 +291,42 @@ bool judgeConstStIsMethodStmt(const Stmt* st, ASTContext* astContext) {
 	}
 	else {
 		return judgeConstStIsMethodStmt(currentSt, astContext);
+	}
+	return false;
+}
+bool judgeConstStIsCallExpr(const Stmt* st, ASTContext* astContext) {
+	auto& parents = astContext->getParents(*st);
+	if (parents.empty()) {
+		return false;
+	}
+	/* 获取父节点 */
+	const Stmt* currentSt = parents[0].get<Stmt>();
+	if (!currentSt) {
+		return false;
+	}
+	if (isa<CallExpr>(currentSt)) {
+		return true;
+	}
+	else {
+		return judgeConstStIsCallExpr(currentSt, astContext);
+	}
+	return false;
+}
+bool judgeConstStIsCallExpr(Stmt* st, ASTContext* astContext) {
+	auto& parents = astContext->getParents(*st);
+	if (parents.empty()) {
+		return false;
+	}
+	/* 获取父节点 */
+	const Stmt* currentSt = parents[0].get<Stmt>();
+	if (!currentSt) {
+		return false;
+	}
+	if (isa<CallExpr>(currentSt)) {
+		return true;
+	}
+	else {
+		return judgeConstStIsCallExpr(currentSt, astContext);
 	}
 	return false;
 }
@@ -414,15 +464,15 @@ void dealVarRecordDeclNode(CXXRecordDecl const* varRecordDeclNode, ASTContext* C
 	else {
 		structType = "struct ";
 	}
-	if (varRecordDeclNode->isClass()) {
+	if (qualifier == "") {
 		qualifier = "typedef ";
 	}
-	if (varRecordDeclNode->isClass()) {
-		recodeStr += qualifier + structType + "Class_" + nameStr + "\n" + "{\n\t";
-	}
+	//if (varRecordDeclNode->isClass()) {
+	recodeStr += qualifier + structType + "Class_" + nameStr + "\n" + "{\n\t";
+	/*}
 	else {
 		recodeStr += qualifier + structType + nameStr + "\n" + "{\n\t";
-	}
+	}*/
 
 	/* 记录结构体的field数量 */
 	RecordDecl::field_iterator jt;
@@ -438,7 +488,7 @@ void dealVarRecordDeclNode(CXXRecordDecl const* varRecordDeclNode, ASTContext* C
 		const Type* type = jt->getType().getTypePtr();
 		QualType nodeType = jt->getType();
 		std::string dimStr = "";
-		fieldTypeStr=dealType(type, fieldTypeStr, nodeType,&dimStr);
+		fieldTypeStr = dealType(type, fieldTypeStr, nodeType, &dimStr);
 		recodeStr += fieldTypeStr + " " + fieldNameStr + " " + dimStr + ";\n\t";
 		std::string initValueStr = "";
 		const Expr* initExpr = field->getInClassInitializer();;
@@ -454,12 +504,12 @@ void dealVarRecordDeclNode(CXXRecordDecl const* varRecordDeclNode, ASTContext* C
 		initClassfun.initCompound = initClassFunStr;
 		initClassFunVector.push_back(initClassfun);
 	}
-	if (varRecordDeclNode->isClass()) {
-		recodeStr += "\r}" + nameStr + ";";
-	}
-	else {
-		recodeStr += "\r};";
-	}
+	//if (varRecordDeclNode->isClass()) {
+	recodeStr += "\r}" + nameStr + ";";
+	//}
+	//else {
+	//	recodeStr += "\r};";
+	//}
 	fileContentVector.push_back(recodeStr);
 	std::string initRecodeFunStr = getInitRecodeInVector(nameStr);
 	if (!(initRecodeFunStr == "")) {
@@ -525,11 +575,22 @@ public:
 			std::string funcName = func->getNameInfo().getName().getAsString();
 			std::string funcType = func->getType().getAsString();
 			std::string returTypeStr = func->getReturnType().getAsString();
+			if (returTypeStr == "_Bool") {
+				returTypeStr = "bool";
+			}
 			int paraNum = func->getNumParams();
+
 			if (isClassFun) {
 				CXXRecordDecl* cxxRecordDecl = dyn_cast<CXXRecordDecl>(func->getParent());
 				auto className = cxxRecordDecl->getNameAsString();
-				funcName = className + "_" + funcName;
+				/* 构造析构函数的名称，判断是否是析构函数 */
+				auto destructorName = "~" + className;
+				if (destructorName == funcName) {
+					funcName = className + "_destructor";
+				}
+				else {
+					funcName = className + "_" + funcName;
+				}
 				funStr += returTypeStr + " " + funcName + "(";
 				funStr += className + " *p" + className;
 				if (paraNum != 0) {
@@ -555,17 +616,22 @@ public:
 						nodeType = DT->getOriginalType();
 					}
 					std::string dimStr = "";
-					typeStr = dealType(type, typeStr, nodeType,&dimStr);
+					typeStr = dealType(type, typeStr, nodeType, &dimStr);
+					auto idx = typeStr.find("struct");
+					if (idx != string::npos) {
+						typeStr.erase(idx, 6);
+					}
+					std::replace(typeStr.begin(), typeStr.end(), '&', '*');
 					if (i == paraNum - 1) {
-						funStr += typeStr + " " + nameStr+dimStr;
+						funStr += typeStr + " " + nameStr + dimStr;
 					}
 					else {
-						funStr += typeStr + " " + nameStr +dimStr + ",";
+						funStr += typeStr + " " + nameStr + dimStr + ",";
 					}
 
 				}
 			}
-			funStr += ")\n{\n\t";
+			funStr += ")";
 			/* 判断解析到的函数是否是类的构造函数且在Vector中 */
 			std::string initClassFunStr = getInitStrInVector(funcName);
 			if (!(initClassFunStr == "")) {
@@ -576,10 +642,16 @@ public:
 			Stmt* comStmtBody = func->getBody();
 			if (comStmtBody) {
 				std::string comStmtBodyStr = parserExpr(comStmtBody, Context);
-				funStr += comStmtBodyStr + "\r}\n";
+				funStr +="\n{\n\t"+ comStmtBodyStr + "\r}\n";
 			}
 			else {
-				funStr += "\r};";
+				if (cPlusPlusPath.find("hpp") != std::string::npos) {
+					funStr += ";";
+				}
+				else {
+					funStr += "\n{\n\t\r};";
+				}
+				
 			}
 			fileContentVector.push_back(funStr);
 		}
@@ -691,6 +763,22 @@ void dealInitValue(const Expr* initExpr, std::string* initValueStr) {
 		}
 	}
 }
+std::string  deleteColon(std::string exprStr) {
+	if (exprStr.find(",") != std::string::npos) {
+		return exprStr.substr(0, exprStr.length() - 1);
+	}
+	else {
+		return exprStr;
+	}
+}
+std::string  deleteComma(std::string exprStr) {
+	if (exprStr.find(";") != std::string::npos) {
+		return exprStr.substr(0, exprStr.length() - 1);
+	}
+	else {
+		return exprStr;
+	}
+}
 void dealSubIfStmt(Stmt* subOtherStmt, std::string& otherStmt, ASTContext* Context) {
 	IfStmt* elseIfStmt = dyn_cast<IfStmt>(subOtherStmt);
 	/* if语句的条件 */
@@ -699,7 +787,7 @@ void dealSubIfStmt(Stmt* subOtherStmt, std::string& otherStmt, ASTContext* Conte
 	/* if语句体 */
 	Stmt* elseIfComp = elseIfStmt->getThen();
 	std::string rootIfCompStr = parserExpr(elseIfComp, Context);
-	otherStmt += "else if(" + elseIfCondStr + "){" + "\n" + rootIfCompStr + "}" + "\n";
+	otherStmt += "\telse if(" + elseIfCondStr + "){\n\t" + rootIfCompStr + "}" + "\n";
 	/* 获取其他的else-if/else语句 */
 	Stmt* subElseIfStmt = elseIfStmt->getElse();
 	if (subElseIfStmt) {
@@ -708,7 +796,7 @@ void dealSubIfStmt(Stmt* subOtherStmt, std::string& otherStmt, ASTContext* Conte
 		}
 		else if (CompoundStmt* elseStmt = dyn_cast<CompoundStmt>(subElseIfStmt)) {
 			std::string elseCondStr = parserExpr(elseStmt, Context);
-			otherStmt += "else\n{" + elseCondStr + "}" + "\n";
+			otherStmt += "else\n{\n\t" + elseCondStr + "}" + "\n";
 		}
 	}
 }
@@ -723,6 +811,40 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 	case Expr::CXXConstCastExprClass:
 	{
 		return parserExpr(cast<CastExpr>(stmt)->getSubExpr(), Context);
+	}
+	case Expr::CXXDeleteExprClass: {
+		CXXDeleteExpr* cxxDeleteExpr = dyn_cast<CXXDeleteExpr>(stmt);
+		auto a = cxxDeleteExpr->getExprStmt();
+
+		auto deleteArgument = cxxDeleteExpr->getArgument();
+		auto deleteArgumentStr = parserExpr(deleteArgument, Context);
+		return "/*delete [] " + deleteArgumentStr + ";*/\n\t";
+	}
+	case Expr::CXXOperatorCallExprClass: {
+		CXXOperatorCallExpr* cxxOperatorCallExpr = dyn_cast<CXXOperatorCallExpr>(stmt);
+		auto a = cxxOperatorCallExpr->getType();
+		auto operateCallSubExprs = cxxOperatorCallExpr->getRawSubExprs();
+		std::string operatorCallExprStr = "";
+		std::string operatorCallExprStrArray[3];
+		for (int i = 0; i < operateCallSubExprs.size(); i++) {
+			operatorCallExprStr += parserExpr(operateCallSubExprs[i], Context);
+			if (operateCallSubExprs.size() == 3 ) {
+				
+				operatorCallExprStrArray[i]= parserExpr(operateCallSubExprs[i], Context);
+			}
+		}
+		if (operateCallSubExprs.size() == 3) {
+			return operatorCallExprStrArray[1] + operatorCallExprStrArray[0] + operatorCallExprStrArray[2];
+		}
+		return operatorCallExprStr;
+	}
+	case Expr::CXXNullPtrLiteralExprClass: {
+		return "NULL";
+	}
+	case Expr::ParenExprClass: {
+		ParenExpr* parenExpr = dyn_cast<ParenExpr>(stmt);
+		Expr* subParentExpr = parenExpr->getSubExpr();
+		return "(" + parserExpr(subParentExpr, Context) + ")";
 	}
 	case Expr::SwitchStmtClass: {
 		SwitchStmt* switchStmt = dyn_cast<SwitchStmt>(stmt);
@@ -799,15 +921,36 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 					   return parserExpr(leftBinaryOperator, Context) + "==" +
 						   parserExpr(rightBinaryOperator, Context);
 				   }
+				   case BO_LAnd: {
+					   return parserExpr(leftBinaryOperator, Context) + "&&" +
+						   parserExpr(rightBinaryOperator, Context);
+				   }
+				   case BO_LOr: {
+					   return parserExpr(leftBinaryOperator, Context) + "||" +
+						   parserExpr(rightBinaryOperator, Context);
+				   }
+				   case BO_NE: {
+					   return parserExpr(leftBinaryOperator, Context) + "!=" +
+						   parserExpr(rightBinaryOperator, Context);
+				   }
+				   case BO_AddAssign: {
+					   return parserExpr(leftBinaryOperator, Context) + "+=" +
+						   parserExpr(rightBinaryOperator, Context);
+				   }
 				   default: {
-					   return "123";
+					   return "BinaryOperatorClass";
 					   break;
 				   }
 
 		}
 	}
 	case Expr::ArraySubscriptExprClass: {
-		return "123";
+		ArraySubscriptExpr* arraySubscriptExpr = dyn_cast<ArraySubscriptExpr>(stmt);
+		Expr* arrayBase = arraySubscriptExpr->getBase();
+		std::string arrayName = parserExpr(arrayBase, Context);
+		Expr* subExpr = arraySubscriptExpr->getRHS();
+		auto dimStr = parserExpr(arraySubscriptExpr->getRHS(), Context);
+		return arrayName + "[" + dimStr + "]";
 	}
 	case Expr::MemberExprClass: {
 		MemberExpr* memberExpr = dyn_cast<MemberExpr>(stmt);
@@ -817,7 +960,11 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 		auto fildName = memberExpr->getMemberDecl()->getDeclName().getAsString();
 		auto stmtClassType = cxxThisExprNode->getStmtClass();
 		if (stmtClassType == Expr::CXXThisExprClass) {
+			bool isCallExpr = judgeConstStIsCallExpr(stmt, Context);
 			return "p" + className + "->" + fildName;
+		}
+		if (className.find(">") != std::string::npos) {
+			return  className + "." + fildName;
 		}
 		else {
 			return  className + fildName;
@@ -857,17 +1004,17 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 			/* 说明是if-elseif-else语句*/
 			if (IfStmt* subIfStmt = dyn_cast<IfStmt>(subOtherStmt)) {
 				dealSubIfStmt(subOtherStmt, otherStmt, Context);
-				auto a = "if(" + rootIfCondStr + "){" + "\n" + rootIfCompStr + "}" + "\n" + otherStmt;
+				auto a = "if(" + rootIfCondStr + "){" + "\n\t" + rootIfCompStr + "}" + "\n" + otherStmt;
 				return a;
 			}
 			/* 说明是else语句 */
 			else if (CompoundStmt* elseStmt = dyn_cast<CompoundStmt>(subOtherStmt)) {
 				std::string elseCondStr = parserExpr(elseStmt, Context);
-				return "if(" + rootIfCondStr + "){" + "\n" + rootIfCompStr + "}" + "\n" + "else\n{" + elseCondStr + "}" + "\n";
+				return "if(" + rootIfCondStr + "){" + "\n\t" + rootIfCompStr + "}" + "\n\t" + "else\n\t{\t" + elseCondStr + "}" + "\n";
 			}
 		}
 		else {
-			return "if(" + rootIfCondStr + "){" + "\n" + rootIfCompStr + "}" + "\n";
+			return "if(" + rootIfCondStr + "){" + "\n\t" + rootIfCompStr + "}" + "\n";
 		}
 
 	}
@@ -878,7 +1025,7 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 			for (auto compStmtChild = compStmt->child_begin();
 				compStmtChild != compStmt->child_end(); compStmtChild++) {
 				Stmt* exprStmt = *compStmtChild;
-				if (dyn_cast<CompoundAssignOperator>(exprStmt) || dyn_cast<CXXOperatorCallExpr>(exprStmt)) {
+				if (dyn_cast<CompoundAssignOperator>(exprStmt)) {
 					continue;
 				}
 				std::string singleCompStmtBodyStr = parserExpr(exprStmt, Context);
@@ -886,7 +1033,9 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 					if (singleCompStmtBodyStr.find(";") != std::string::npos) {
 						compStmtBodyStr += singleCompStmtBodyStr + "\n\t";
 					}
-
+					else if (singleCompStmtBodyStr.find("}") != std::string::npos) {
+						compStmtBodyStr += singleCompStmtBodyStr + "\n\t";
+					}
 					else {
 						compStmtBodyStr += singleCompStmtBodyStr + ";\n\t";
 					}
@@ -903,11 +1052,14 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 		Expr* forCond = forStmt->getCond();
 		Expr* forInc = forStmt->getInc();
 		std::string forInitStr = parserExpr(forInit, Context);
+		forInitStr = deleteComma(forInitStr);
 		std::string forCondStr = parserExpr(forCond, Context);
+		forCondStr = deleteComma(forCondStr);
 		std::string forIncStr = parserExpr(forInc, Context);
+		forIncStr = deleteComma(forIncStr);
 		Stmt* forBody = forStmt->getBody();
 		std::string forBodyStr = parserExpr(forBody, Context);
-		return "for(" + forInitStr + ";" + forCondStr + ";" + forIncStr + "){\n" + forBodyStr + "}";
+		return "for(" + forInitStr + ";" + forCondStr + ";" + forIncStr + "){\n\t\t" + forBodyStr + "}";
 	}
 	case Expr::UnaryOperatorClass: {
 		UnaryOperator* unaryOperatorExpr = dyn_cast<UnaryOperator>(stmt);
@@ -919,8 +1071,14 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 		case UO_PostDec: {
 			return parserExpr(unaryOperatorExpr->getSubExpr(), Context) + "--";
 		}
+		case UO_Minus: {
+			return "-" + parserExpr(unaryOperatorExpr->getSubExpr(), Context);
+		}
+		case UO_Deref: {
+			return "*p" + parserExpr(unaryOperatorExpr->getSubExpr(), Context);
+		}
 		default: {
-			return "123";
+			return "UnaryOperatorClass";
 		}
 		}
 		break;
@@ -947,8 +1105,28 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 			}
 
 		}
-
-		return valueDecl->getNameAsString();
+		auto a = type->getTypeClass();
+		auto d=declRefExpr->isLValue();
+		/*else if (type->getTypeClass() == 21) {
+			bool isConstStIsCallExpr = judgeConstStIsCallExpr(stmt, Context);
+			if (isConstStIsCallExpr) {
+				return valueDecl->getNameAsString();
+			}
+			else {
+				return "";
+			}
+		}*/
+		auto valueDeclStr = valueDecl->getNameAsString();
+		if (valueDeclStr == "operator=") {
+			return "=";
+		}
+		else if (type->getTypeClass() == 24) {
+			return "*"+valueDecl->getNameAsString();
+		}
+		else {
+			return valueDecl->getNameAsString();
+		}
+		
 	}
 	case Expr::WhileStmtClass: {
 		WhileStmt* whileStmt = dyn_cast<WhileStmt>(stmt);
@@ -965,9 +1143,9 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 			return "return " + parserExpr(expr, Context) + ";";
 		}
 		else {
-			return "return 333;";
+			return "return;\n";
 		}
-		
+
 	}
 							  /*case Expr::CXXMemberCallExprClass: {
 								  CXXMemberCallExpr* cXXMemberCallExpr = dyn_cast<CXXMemberCallExpr>(stmt);
@@ -983,6 +1161,19 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 		if (dyn_cast<MemberExpr>(func_decl)) {
 			auto memberExpr = dyn_cast<MemberExpr>(func_decl);
 			auto memberBase = memberExpr->getBase();
+			if (dyn_cast<CXXThisExpr>(memberBase)) {
+
+				auto idx = funcCall.find(">");
+				if (idx != string::npos) {
+					auto cxxThisExpr = dyn_cast<CXXThisExpr>(memberBase);
+					auto className = cxxThisExpr->getType().getBaseTypeIdentifier()->getName();
+					std::string classNameStr = className;
+					std::string filedName = funcCall.substr(idx + 1, funcCall.length());
+					funcCall = classNameStr + "_" + filedName;
+					callArgsStr += "p" + classNameStr;
+				}
+
+			}
 			if (dyn_cast<DeclRefExpr>(memberBase)) {
 				auto declRefExpr = dyn_cast<DeclRefExpr>(memberBase);
 
@@ -1001,17 +1192,21 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 				}
 			}
 		}
-		if (call->getNumArgs() > 0) {
+		callArgsStr = deleteColon(callArgsStr);
+		if (call->getNumArgs() > 0 && (!(callArgsStr == ""))) {
 			callArgsStr += ",";
 		}
 		for (int i = 0, j = call->getNumArgs(); i < j; i++) {
 			Expr* callArg = call->getArg(i);
-			if (i == call->getNumArgs() - 1) {
-				callArgsStr += parserExpr(callArg, Context);
+			auto singleCallArg = parserExpr(callArg, Context);
+			singleCallArg = deleteColon(singleCallArg);
+			callArgsStr += singleCallArg;
+			if (i != call->getNumArgs() - 1) {
+				callArgsStr += ",";
 			}
-			else {
+			/*else {
 				callArgsStr += parserExpr(callArg, Context) + ",";
-			}
+			}*/
 
 		}
 		return funcCall + "(" + callArgsStr + ")";
@@ -1026,21 +1221,21 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 			}
 
 		}
-		//for (auto declChild = declStmt->child_begin(); declChild != declStmt->child_end(); declChild++) {
-		//	Stmt* singleDeclStmt = *declChild;
-		//	std::cout << "\n";
-		//	/*if (VarDecl* vd = dyn_cast<VarDecl>(singleDeclStmt)) {
-		//		std::cout << vd->getName().str() << std::endl;
-		//	}*/
-		//	return "123";
-		//}
-		else{
-		return "123";
+		else {
+			std::string compDecl = "";
+			DeclGroupRef declGroupRef = declStmt->getDeclGroup();
+			for (auto declChild = declGroupRef.begin(); declChild != declGroupRef.end(); declChild++) {
+				Decl* singleDeclStmt = *declChild;
+				if (VarDecl* varDeclNode = dyn_cast<VarDecl>(singleDeclStmt)) {
+					compDecl += dealVarDeclNode(varDeclNode) + "\n\t";
+				}
+			}
+			return compDecl;
+		}
+	}
 
-	}
-	}
 	default: {
-		return "123";
+		return "";
 
 	}
 
@@ -1062,6 +1257,7 @@ class FindNamedClassAction : public clang::ASTFrontendAction {
 public:
 	virtual std::unique_ptr<clang::ASTConsumer>
 		CreateASTConsumer(clang::CompilerInstance& Compiler, llvm::StringRef InFile) {
+		globalContext=&Compiler.getASTContext();
 		Preprocessor& pp = Compiler.getPreprocessor();
 		Find_Includes* find_includes_callback =
 			static_cast<Find_Includes*>(pp.getPPCallbacks());
@@ -1165,10 +1361,11 @@ public:
 		}
 	}
 };
+
 void convertCPlusPlus2C(std::string sourcePath, std::string writePath) {
 	cPlusPlusPath = sourcePath;
-	int a = 3;
-	const char* argvs1212[3] = { "", "", "--"};
+	int a = 4;
+	const char* argvs1212[4] = { "", "", "--","-DNULL=nullptr" };
 	CommonOptionsParser OptionsParser(a, argvs1212, MyToolCategory);
 	// run the Clang Tool, creating a new FrontendAction (explained below)
 	std::vector<std::string> fileList;
@@ -1197,6 +1394,26 @@ int main(int argc, const char** argv) {
 		}
 	}*/
 
-	convertCPlusPlus2C("C:\\Users\\bondc\\Desktop\\CtrlEx\\CtrlEx\\CtrlEx_inner_algo.cpp", "C:\\Users\\bondc\\Desktop\\a.c");
+	convertCPlusPlus2C("C:\\Users\\bondc\\Desktop\\test.hpp", "C:\\Users\\bondc\\Desktop\\a.c");
+	fileContentVector.clear();
+	convertCPlusPlus2C("C:\\Users\\bondc\\Desktop\\CtrlEx\\CtrlEx\\common_function.cpp", "C:\\Users\\bondc\\Desktop\\test\\common_function.c");
+	fileContentVector.clear();
+	convertCPlusPlus2C("C:\\Users\\bondc\\Desktop\\CtrlEx\\CtrlEx\\CtrlEx_inner_algo.cpp", "C:\\Users\\bondc\\Desktop\\test\\CtrlEx_inner_algo.c");
+	fileContentVector.clear();
+	convertCPlusPlus2C("C:\\Users\\bondc\\Desktop\\CtrlEx\\CtrlEx\\CtrlEx_solve.cpp", "C:\\Users\\bondc\\Desktop\\test\\CtrlEx_solve.c");
+	fileContentVector.clear();
+	convertCPlusPlus2C("C:\\Users\\bondc\\Desktop\\CtrlEx\\CtrlEx\\CtrlEx_std_algo.cpp", "C:\\Users\\bondc\\Desktop\\test\\CtrlEx_std_algo.c");
+	fileContentVector.clear();
+	convertCPlusPlus2C("C:\\Users\\bondc\\Desktop\\CtrlEx\\CtrlEx\\common_function.hpp", "C:\\Users\\bondc\\Desktop\\test\\common_function.h");
+	fileContentVector.clear();
+	convertCPlusPlus2C("C:\\Users\\bondc\\Desktop\\CtrlEx\\CtrlEx\\CtrlEx.hpp", "C:\\Users\\bondc\\Desktop\\test\\CtrlEx.h");
+	fileContentVector.clear();
+	convertCPlusPlus2C("C:\\Users\\bondc\\Desktop\\CtrlEx\\CtrlEx\\CtrlEx_type.hpp", "C:\\Users\\bondc\\Desktop\\test\\CtrlEx_type.h");
+	fileContentVector.clear();
+	convertCPlusPlus2C ("C:\\Users\\bondc\\Desktop\\CtrlEx\\CtrlEx\\include\\JETINPUT.hpp", "C:\\Users\\bondc\\Desktop\\test\\JETINPUT.h");
+	fileContentVector.clear();
+	convertCPlusPlus2C("C:\\Users\\bondc\\Desktop\\CtrlEx\\CtrlEx\\include\\GYROOUTPUT.hpp", "C:\\Users\\bondc\\Desktop\\test\\GYROOUTPUT.h");
+	fileContentVector.clear();
+
 	return 0;
 }
