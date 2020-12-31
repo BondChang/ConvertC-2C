@@ -12,6 +12,7 @@ extern "C" __declspec(dllexport) bool judgeIsParserFile(SourceLocation sourceLoc
 int funArrayLen = 0;
 bool isParserIfStmt = false;
 std::vector<int> fileLocVector;
+std::vector <std::string> functionNameVector;
 ASTContext* globalContext;
 std::vector<InitClassFun> initClassFunVector;
 std::vector<std::string> allConstructionMethodVector;
@@ -533,6 +534,18 @@ std::string getInitStrInVector(std::string funcName) {
 	}
 	return "";
 }
+std::string getNotReptatFunName(std::string funcName) {
+	int count = 1;
+	std::vector<std::string>::iterator ret;
+	ret = std::find(functionNameVector.begin(), functionNameVector.end(), funcName);
+	if (ret == functionNameVector.end()) {
+		functionNameVector.push_back(funcName);
+		return funcName;
+	}
+	else {
+		return getNotReptatFunName(funcName.append(std::to_string(count++)));
+	}
+}
 bool judgeIsParserFile(SourceLocation sourceLoc, ASTContext* Context) {
 	SourceManager& sourceManager = Context->getSourceManager();
 	std::string path = sourceManager.getFilename(sourceLoc).str().c_str();
@@ -591,6 +604,7 @@ public:
 				else {
 					funcName = className + "_" + funcName;
 				}
+				funcName=getNotReptatFunName(funcName);
 				funStr += returTypeStr + " " + funcName + "(";
 				funStr += className + " *p" + className;
 				if (paraNum != 0) {
@@ -598,6 +612,7 @@ public:
 				}
 			}
 			else {
+				funcName = getNotReptatFunName(funcName);
 				funStr += returTypeStr + " " + funcName + "(";
 			}
 			if (paraNum != 0) {
@@ -961,7 +976,7 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 		auto stmtClassType = cxxThisExprNode->getStmtClass();
 		if (stmtClassType == Expr::CXXThisExprClass) {
 			bool isCallExpr = judgeConstStIsCallExpr(stmt, Context);
-			return "p" + className + "->" + fildName;
+			return  className + "->" + fildName;
 		}
 		if (className.find(">") != std::string::npos) {
 			return  className + "." + fildName;
@@ -972,8 +987,11 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 	}
 	case Expr::CXXThisExprClass: {
 		CXXThisExpr* cxxThisExpr = dyn_cast<CXXThisExpr>(stmt);
+		auto cxxThisExprType=cxxThisExpr->getType().getTypePtr();
 		auto className = cxxThisExpr->getType().getBaseTypeIdentifier()->getName();
-		return className;
+		std::string classNameStr = className;
+		auto a=cxxThisExprType->getTypeClass();
+		return "p"+classNameStr;	
 	}
 	case Expr::IntegerLiteralClass: {
 		IntegerLiteral* integerLiteral = dyn_cast<IntegerLiteral>(stmt);
@@ -1049,17 +1067,35 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 	case Expr::ForStmtClass: {
 		ForStmt* forStmt = dyn_cast<ForStmt>(stmt);
 		Stmt* forInit = forStmt->getInit();
+		std::string forDeclStr = "";
 		Expr* forCond = forStmt->getCond();
 		Expr* forInc = forStmt->getInc();
 		std::string forInitStr = parserExpr(forInit, Context);
 		forInitStr = deleteComma(forInitStr);
+		if (dyn_cast<DeclStmt>(forInit)) {
+			DeclStmt* forInitStmt = dyn_cast<DeclStmt>(forInit);
+			if (forInitStmt->isSingleDecl()) {
+				auto declExprNode = forInitStmt->getSingleDecl();
+				if (VarDecl* varDeclNode = dyn_cast<VarDecl>(declExprNode)) {
+					std::string typeStr=varDeclNode->getType().getAsString();
+					std::string nameStr = varDeclNode->getNameAsString();
+					forDeclStr = typeStr + " " + nameStr+";\n\t";
+					auto idx = forInitStr.find(typeStr);
+					if (idx != string::npos) {
+						forInitStr = forInitStr.substr(idx+ typeStr.length()+1, forInitStr.length());
+	    
+					}
+				}
+
+			}
+		}
 		std::string forCondStr = parserExpr(forCond, Context);
 		forCondStr = deleteComma(forCondStr);
 		std::string forIncStr = parserExpr(forInc, Context);
 		forIncStr = deleteComma(forIncStr);
 		Stmt* forBody = forStmt->getBody();
 		std::string forBodyStr = parserExpr(forBody, Context);
-		return "for(" + forInitStr + ";" + forCondStr + ";" + forIncStr + "){\n\t\t" + forBodyStr + "}";
+		return forDeclStr+"for(" + forInitStr + ";" + forCondStr + ";" + forIncStr + "){\n\t" + forBodyStr + "}";
 	}
 	case Expr::UnaryOperatorClass: {
 		UnaryOperator* unaryOperatorExpr = dyn_cast<UnaryOperator>(stmt);
@@ -1075,7 +1111,7 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 			return "-" + parserExpr(unaryOperatorExpr->getSubExpr(), Context);
 		}
 		case UO_Deref: {
-			return "*p" + parserExpr(unaryOperatorExpr->getSubExpr(), Context);
+			return "*" + parserExpr(unaryOperatorExpr->getSubExpr(), Context);
 		}
 		default: {
 			return "UnaryOperatorClass";
@@ -1198,8 +1234,12 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 		}
 		for (int i = 0, j = call->getNumArgs(); i < j; i++) {
 			Expr* callArg = call->getArg(i);
+			bool isLValue=callArg->isLValue();
 			auto singleCallArg = parserExpr(callArg, Context);
 			singleCallArg = deleteColon(singleCallArg);
+			if (isLValue) {
+				singleCallArg = "&(" + singleCallArg + ")";
+			}
 			callArgsStr += singleCallArg;
 			if (i != call->getNumArgs() - 1) {
 				callArgsStr += ",";
@@ -1232,6 +1272,26 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 			}
 			return compDecl;
 		}
+	}
+	case Expr::CXXConstructExprClass: {
+		CXXConstructExpr* cxxConstructExpr = dyn_cast<CXXConstructExpr>(stmt);
+		auto a=cxxConstructExpr->getArgs();
+		std::string constructExprStr = "";
+		for (auto subConstructExpr = cxxConstructExpr->child_begin(); subConstructExpr != cxxConstructExpr->child_end(); subConstructExpr++) {
+			Stmt* subConStmt = *subConstructExpr;
+			constructExprStr+=parserExpr(subConStmt, Context);
+		}
+		return constructExprStr;
+	}
+	case Expr::UnaryExprOrTypeTraitExprClass: {
+		UnaryExprOrTypeTraitExpr* unaryExprOrTypeTraitExpr = dyn_cast<UnaryExprOrTypeTraitExpr>(stmt);
+		auto sizeType =unaryExprOrTypeTraitExpr->getArgumentType();
+		auto sizeNameStr=sizeType.getTypePtr()->getAsCXXRecordDecl()->getNameAsString();
+		//Expr* unaryExprOrTypeTraitExprArgu=unaryExprOrTypeTraitExpr->getArgumentExpr();
+		//clang::Expr::EvalResult integer;
+		//unaryExprOrTypeTraitExpr.
+		//unaryExprOrTypeTraitExpr->EvaluateAsInt(integer,*Context,);
+		return "sizeof("+ sizeNameStr+")";
 	}
 
 	default: {
@@ -1394,7 +1454,7 @@ int main(int argc, const char** argv) {
 		}
 	}*/
 
-	convertCPlusPlus2C("C:\\Users\\bondc\\Desktop\\test.hpp", "C:\\Users\\bondc\\Desktop\\a.c");
+	/*convertCPlusPlus2C("C:\\Users\\bondc\\Desktop\\test.hpp", "C:\\Users\\bondc\\Desktop\\a.c");
 	fileContentVector.clear();
 	convertCPlusPlus2C("C:\\Users\\bondc\\Desktop\\CtrlEx\\CtrlEx\\common_function.cpp", "C:\\Users\\bondc\\Desktop\\test\\common_function.c");
 	fileContentVector.clear();
@@ -1409,7 +1469,7 @@ int main(int argc, const char** argv) {
 	convertCPlusPlus2C("C:\\Users\\bondc\\Desktop\\CtrlEx\\CtrlEx\\CtrlEx.hpp", "C:\\Users\\bondc\\Desktop\\test\\CtrlEx.h");
 	fileContentVector.clear();
 	convertCPlusPlus2C("C:\\Users\\bondc\\Desktop\\CtrlEx\\CtrlEx\\CtrlEx_type.hpp", "C:\\Users\\bondc\\Desktop\\test\\CtrlEx_type.h");
-	fileContentVector.clear();
+	fileContentVector.clear();*/
 	convertCPlusPlus2C ("C:\\Users\\bondc\\Desktop\\CtrlEx\\CtrlEx\\include\\JETINPUT.hpp", "C:\\Users\\bondc\\Desktop\\test\\JETINPUT.h");
 	fileContentVector.clear();
 	convertCPlusPlus2C("C:\\Users\\bondc\\Desktop\\CtrlEx\\CtrlEx\\include\\GYROOUTPUT.hpp", "C:\\Users\\bondc\\Desktop\\test\\GYROOUTPUT.h");
