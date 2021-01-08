@@ -88,6 +88,12 @@ struct AllFileContent {
 };
 
 
+struct Comment {
+	Comment(const std::string& Message, unsigned Line, unsigned Col)
+		: Message(Message), Line(Line), Col(Col) { }
+	std::string Message;
+	unsigned Line, Col;
+};
 /* 获取c文件的信息 */
 extern "C" __declspec(dllexport) void convertFiles(const char** sourcePath, const char** targetPath, int fileCount);
 

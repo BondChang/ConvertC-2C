@@ -11,6 +11,7 @@ extern "C" __declspec(dllexport) std::string dealType(const Type * type, std::st
 extern "C" __declspec(dllexport) bool judgeIsParserFile(SourceLocation sourceLoc, ASTContext * Context);
 int funArrayLen = 0;
 bool isParserIfStmt = false;
+
 std::vector<int> fileLocVector;
 std::vector<AllHaveFunBodyHpp> hppFuns;
 std::vector<std::string> funForInitDeclareName;
@@ -27,8 +28,27 @@ std::vector<AllFileContent> allFileContext;
 std::vector<std::string> fileContentVector;
 std::string cPlusPlusPath;
 static llvm::cl::OptionCategory MyToolCategory("global-detect options");
+std::vector<Comment> CommentVector;
+class CommentHandlerVisitor :public CommentHandler {
+public:
+	bool HandleComment(Preprocessor& PP, SourceRange Loc) override {
+		SourceLocation Start = Loc.getBegin();
+		SourceManager& SM = PP.getSourceManager();
+		std::string C(SM.getCharacterData(Start),
+			SM.getCharacterData(Loc.getEnd()));
+		bool Invalid;
+		unsigned CLine = SM.getSpellingLineNumber(Start, &Invalid);
+		if (Invalid) {
+			unsigned CCol = SM.getSpellingColumnNumber(Start, &Invalid);
+			if (Invalid) {
+				CommentVector.push_back(Comment(C, CLine, CCol));
+			}
+		}
+		return false;
+	}
+};
 
-
+CommentHandlerVisitor commentHandlerVisitor;
 std::string GetComment(ASTContext* Context, const Decl* decl) {
 	auto comment = Context->getCommentForDecl(decl, nullptr);
 	std::string str = "";
@@ -81,7 +101,7 @@ public:
 		bool isParserFile = judgeIsParserFile(hash_loc, globalContext);
 		if (isParserFile) {
 			bool isInIgnore = isInIgnoreVector(fileName);
-			if (!isInIgnore&& !fileName.empty()) {
+			if (!isInIgnore && !fileName.empty()) {
 				fileContentVector.push_back("#include \"" + fileName + "\"");
 			}
 		}
@@ -641,7 +661,7 @@ public:
 			if (!isInFunction) {
 				if (!isParserd(var->getBeginLoc(), Context)) {
 					addNodeInfo(var->getBeginLoc(), Context);
-					fileContentVector.push_back(dealVarDeclNode(var,Context));
+					fileContentVector.push_back(dealVarDeclNode(var, Context));
 				}
 			}
 		}
@@ -658,9 +678,9 @@ public:
 			for (auto i : *comms) {
 				llvm::outs() << i.second->getBriefText(*Context) << "\n";
 			}*/
-			
-		/*	auto comment=Context->getCommentForDecl(func, nullptr);
-			auto comment2= Context->getCommentForDecl(func, &compilerInstance->getPreprocessor());*/
+
+			/*	auto comment=Context->getCommentForDecl(func, nullptr);
+				auto comment2= Context->getCommentForDecl(func, &compilerInstance->getPreprocessor());*/
 			bool isClassFun = judgeIsClassFun(func);
 			std::string funStr = "";
 			std::string funcName = func->getNameInfo().getName().getAsString();
@@ -855,13 +875,13 @@ void dealInitValue(const Expr* initExpr, std::string* initValueStr) {
 
 			for (int i = 0; i < NumInits; i++) {
 				dealInitValue(iLE->getInit(i), initValueStr);
-				if (initExprType->isStructureType()&&(i!= NumInits-1)) {
+				if (initExprType->isStructureType() && (i != NumInits - 1)) {
 					*initValueStr += ",\n";
 				}
 				else {
 					*initValueStr += ",";
 				}
-				
+
 			}
 			int num = initValueStr->length();
 			if (num > 0) {
@@ -1199,8 +1219,8 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 	}
 	case Expr::CompoundAssignOperatorClass: {
 		CompoundAssignOperator* compoundAssignOperator = dyn_cast<CompoundAssignOperator>(stmt);
-		Expr* leftCompondAssign=compoundAssignOperator->getLHS();
-		Expr* rightCompondAssign=compoundAssignOperator->getRHS();
+		Expr* leftCompondAssign = compoundAssignOperator->getLHS();
+		Expr* rightCompondAssign = compoundAssignOperator->getRHS();
 		return parserExpr(leftCompondAssign, Context) + "+=" + parserExpr(rightCompondAssign, Context);
 	}
 	case Expr::CompoundStmtClass: {
@@ -1210,7 +1230,7 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 			for (auto compStmtChild = compStmt->child_begin();
 				compStmtChild != compStmt->child_end(); compStmtChild++) {
 				Stmt* exprStmt = *compStmtChild;
-				
+
 				std::string singleCompStmtBodyStr = parserExpr(exprStmt, Context);
 				if (!singleCompStmtBodyStr.empty()) {
 					if (singleCompStmtBodyStr.find(";") != std::string::npos) {
@@ -1429,7 +1449,7 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 			auto declExprNode = declStmt->getSingleDecl();
 			addNodeInfo(declExprNode->getBeginLoc(), Context);
 			if (VarDecl* varDeclNode = dyn_cast<VarDecl>(declExprNode)) {
-				return dealVarDeclNode(varDeclNode,Context);
+				return dealVarDeclNode(varDeclNode, Context);
 			}
 
 		}
@@ -1439,7 +1459,7 @@ std::string parserExpr(Stmt* stmt, ASTContext* Context) {
 			for (auto declChild = declGroupRef.begin(); declChild != declGroupRef.end(); declChild++) {
 				Decl* singleDeclStmt = *declChild;
 				if (VarDecl* varDeclNode = dyn_cast<VarDecl>(singleDeclStmt)) {
-					compDecl += dealVarDeclNode(varDeclNode,Context) + "\n\t";
+					compDecl += dealVarDeclNode(varDeclNode, Context) + "\n\t";
 				}
 			}
 			return compDecl;
@@ -1494,91 +1514,19 @@ public:
 		Preprocessor& pp = Compiler.getPreprocessor();
 		Find_Includes* find_includes_callback =
 			static_cast<Find_Includes*>(pp.getPPCallbacks());
-		/*auto& langOpts = Compiler.getLangOpts();
-		langOpts.CPlusPlus = true;*/
-		/*langOpts.CPlusPlus11 = true;
-		langOpts.CPlusPlus14 = true;
-		langOpts.C11 = true;
-		langOpts.C99 = true;
-		langOpts.C17 = true;
-		langOpts.Bool = true;*/
-		//CompilerInvocation& invocation = Compiler.getInvocation();
-		//InputKind(Language::CXX).getPreprocessed();
-		////auto *TO = new TargetOptions();
-		////llvm::IntrusiveRefCntPtr<TargetOptions> pto(new TargetOptions());
-		//auto TO = std::make_shared<TargetOptions>();
-		//TO->Triple = llvm::sys::getDefaultTargetTriple();
-		////TO->Triple = llvm::sys::getDefaultTargetTriple();
-		//TargetInfo* targetInfo =
-		//	TargetInfo::CreateTargetInfo(Compiler.getDiagnostics(), TO);
-		//Compiler.setTarget(targetInfo);
-		//invocation.setLangDefaults(langOpts, InputKind(Language::CXX).getPreprocessed(), targetInfo->getTriple(), Compiler.getPreprocessorOpts(), LangStandard::lang_cxx14);
-		/*Compiler.createDiagnostics();
-		Compiler.createFileManager();
-		Compiler.createSourceManager(Compiler.getFileManager());
-		Compiler.createPreprocessor(TU_Module);*/
-		//Compiler.createASTContext();
-		// do whatever you want with the callback now
-		/*if (find_includes_callback->has_include) {
-			std::cout << "Found at least one include" << std::endl;
-		}*/
 		return std::unique_ptr<clang::ASTConsumer>(
 			new FindNamedClassConsumer(&Compiler.getASTContext()));
 	}
 	bool BeginSourceFileAction(CompilerInstance& ci) {
 		std::unique_ptr<Find_Includes> find_includes_callback(new Find_Includes());
-		//auto& langOpts = ci.getLangOpts();
-		//langOpts.is
-		//langOpts.CPlusPlus = true;
-		//langOpts.CPlusPlus11 = true;
-		//langOpts.CPlusPlus14 = true;
-		//langOpts.C11 = true;
-		//langOpts.C99 = true;
-		//langOpts.C17 = true;
-		//langOpts.Bool = true;
-
-
-		/*CompilerInvocation& invocation = ci.getInvocation();
-		auto TO = std::make_shared<TargetOptions>();
-		TO->Triple = llvm::sys::getDefaultTargetTriple();
-		TargetInfo* targetInfo =
-			TargetInfo::CreateTargetInfo(ci.getDiagnostics(), TO);
-		ci.setTarget(targetInfo);
-		invocation.setLangDefaults(langOpts, InputKind(Language::CXX).getPreprocessed(), targetInfo->getTriple(), ci.getPreprocessorOpts(), LangStandard::lang_cxx14);
-		ci.createDiagnostics();
-		ci.createFileManager();
-		ci.createSourceManager(ci.getFileManager());
-		ci.createPreprocessor(TU_Module);
-		ci.createASTContext();*/
-
-
-		//CompilerInvocation& invocation = ci.getInvocation();
-		//auto TO = std::make_shared<TargetOptions>();
-		//TO->Triple = llvm::sys::getDefaultTargetTriple();
-		//TargetInfo* targetInfo =
-		//	TargetInfo::CreateTargetInfo(ci.getDiagnostics(), TO);
-		//ci.setTarget(targetInfo);
-
-		//ci.createFileManager();
-		//auto& fileManager = ci.getFileManager();
-
-		//ci.createSourceManager(fileManager);
-		//auto& sourceManager = ci.getSourceManager();
-
-		//LangOptions langOpts;
-		//langOpts.GNUMode = 1;
-		//langOpts.CXXExceptions = 1;
-		//langOpts.RTTI = 1;
-		//langOpts.Bool = 1;   // <-- Note the Bool option here !
-		//langOpts.CPlusPlus = 1;
-		//PreprocessorOptions& PPOpts = ci.getPreprocessorOpts();
-		//invocation.setLangDefaults(langOpts,
-		//	clang::IK_CXX,
-		//	TO->Triple,
-		//	PPOpts,
-		//	clang::LangStandard::lang_cxx0x);
+		
 
 		Preprocessor& pp = ci.getPreprocessor();
+		
+	/*	CommentHandlerVisitor* V =
+			static_cast<CommentHandlerVisitor*>(find_includes_callback);*/
+		//pp.addCommentHandler(V);
+		pp.addCommentHandler(&commentHandlerVisitor);
 		pp.addPPCallbacks(std::move(find_includes_callback));
 		return true;
 	}
@@ -1628,8 +1576,8 @@ void convertCPlusPlus2C(std::string sourcePath, std::string writePath) {
 	}
 	hppFuns.push_back(allHaveFunBodyHpp);
 	AllFileContent singleFileContext;
-	singleFileContext.writePath= strcpy(new char[writePath.length() + 1], writePath.data());
-	singleFileContext.fileContent= fileContentVector;
+	singleFileContext.writePath = strcpy(new char[writePath.length() + 1], writePath.data());
+	singleFileContext.fileContent = fileContentVector;
 	allFileContext.push_back(singleFileContext);
 }
 void addHppFunBody() {
@@ -1652,7 +1600,7 @@ void addHppFunBody() {
 					/* 文件不存在 */
 					if (!fin) {
 						write.open(nameWithoutSuffix + ".c");
-						write << "#include \"" +nameWithoutSuffix + ".h\"\n" << endl;
+						write << "#include \"" + nameWithoutSuffix + ".h\"\n" << endl;
 					}
 					else {
 						write.open(nameWithoutSuffix + ".c", ios::app);
@@ -1668,7 +1616,7 @@ void addHppFunBody() {
 		}
 	}
 }
-void convertFiles(const char** sourcePath, const char** targetPath,int fileCount) {
+void convertFiles(const char** sourcePath, const char** targetPath, int fileCount) {
 	hppFuns.clear();
 	initIgnoreVecotr();
 	for (int i = 0; i < fileCount; i++) {
@@ -1686,7 +1634,7 @@ void convertFiles(const char** sourcePath, const char** targetPath,int fileCount
 				fout << *subIter << endl;
 			}
 			fout.close();
-			
+
 		}
 	}
 	/*std::ofstream fout;
@@ -1703,13 +1651,14 @@ void convertFiles(const char** sourcePath, const char** targetPath,int fileCount
 int main(int argc, const char** argv) {
 	const char* s[1] = {
 				"C:\\Users\\bondc\\Desktop\\a.hpp",
-			};
+	};
 
 	const char* t[1] = {
 				"C:\\Users\\bondc\\Desktop\\a.c"
-				
+
 	};
 	convertFiles(s, t, 1);
+	CommentVector.clear();
 }
 //int main(int argc, const char** argv) {
 //
